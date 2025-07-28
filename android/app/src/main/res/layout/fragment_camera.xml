@@ -1,0 +1,111 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    ~ Copyright 2022 The TensorFlow Authors. All Rights Reserved.
+    ~
+    ~ Licensed under the Apache License, Version 2.0 (the "License");
+    ~ you may not use this file except in compliance with the License.
+    ~ You may obtain a copy of the License at
+    ~
+    ~       http://www.apache.org/licenses/LICENSE-2.0
+    ~
+    ~ Unless required by applicable law or agreed to in writing, software
+    ~ distributed under the License is distributed on an "AS IS" BASIS,
+    ~ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    ~ See the License for the specific language governing permissions and
+    ~ limitations under the License.
+-->
+<androidx.coordinatorlayout.widget.CoordinatorLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:id="@+id/camera_container"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent">
+
+    <androidx.camera.view.PreviewView
+        android:id="@+id/view_finder"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        app:scaleType="fillStart" />
+
+
+
+<!--    <TextView-->
+<!--        android:id="@+id/staticResultTextView"-->
+<!--        android:layout_width="wrap_content"-->
+<!--        android:layout_height="wrap_content"-->
+<!--        android:text="@string/static_label"-->
+<!--        android:textSize="32sp"-->
+<!--        android:textColor="#FF0000"-->
+<!--        android:layout_marginTop="72dp"-->
+<!--        android:layout_marginStart="16dp"-->
+<!--        android:layout_gravity="top|start" />-->
+
+<!--    <TextView-->
+<!--        android:id="@+id/dynamicResultTextView"-->
+<!--        android:layout_width="wrap_content"-->
+<!--        android:layout_height="wrap_content"-->
+<!--        android:text="@string/dynamic_label"-->
+<!--        android:textSize="32sp"-->
+<!--        android:textColor="#0000FF"-->
+<!--        android:layout_marginTop="104dp"-->
+<!--        android:layout_marginStart="16dp"-->
+<!--        android:layout_gravity="top|start" />-->
+
+
+
+    <com.google.mediapipe.examples.handlandmarker.OverlayView
+        android:id="@+id/overlay"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent" />
+
+
+    <include
+        android:id="@+id/bottom_sheet_layout"
+        layout="@layout/info_bottom_sheet"
+
+        />
+
+    <FrameLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_gravity="bottom"
+        android:layout_marginBottom="50dp"
+        app:layout_anchor="@id/bottom_sheet_layout"
+        app:layout_anchorGravity ="top"
+        android:background="@color/bottom_sheet_background"
+        >
+        <EditText
+            android:id="@+id/textEdit"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:background="@drawable/edit_text_border"
+            android:gravity="top|start"
+            android:hint="@string/textEdit"
+            android:inputType="textMultiLine|textNoSuggestions"
+            android:maxLines="4"
+            android:minLines="1"
+            android:scrollbars="vertical"
+            android:textColor="@color/bottom_sheet_text_color"
+            android:textSize="24sp"
+            android:paddingStart="16dp"
+            android:layout_marginEnd="72dp"
+            />
+
+        <ImageButton
+            android:id="@+id/speakerButton"
+            android:layout_width="52dp"
+            android:layout_height="52dp"
+            android:layout_gravity="end|top"
+            android:background="@drawable/button_ripple"
+            android:contentDescription="@string/tts"
+            android:padding="4dp"
+            android:scaleType="fitCenter"
+            android:src="@drawable/baseline_play_circle_outline_24"
+            app:tint="#000000" />
+
+    </FrameLayout>
+
+
+
+
+
+</androidx.coordinatorlayout.widget.CoordinatorLayout>
