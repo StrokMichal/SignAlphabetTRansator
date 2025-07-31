@@ -387,9 +387,12 @@ class HandLandmarkerHelper(
 
 
 class GestureClassifier(context: Context) {
+    enum class ClassificationType {
+        STATIC, DYNAMIC
+    }
+
     private val interpreterStatic: Interpreter
     private val interpreterDynamic: Interpreter
-
 
     val staticLabels: List<String>
     val dynamicLabels: List<String>
@@ -417,12 +420,8 @@ class GestureClassifier(context: Context) {
 
     fun landmarkConverter(landmarkList: List<FloatArray>): FloatArray {
         if (landmarkList.isEmpty()) return FloatArray(0)
-
         val baseX = landmarkList[0][0]
         val baseY = landmarkList[0][1]
-
-        // Najpierw przesuwamy punktami względem bazowego i od razu zbieramy je do tablicy,
-        // również liczymy max wartość bezwzględną w trakcie jednej pętli
         val converted = FloatArray(landmarkList.size * 2)
         var maxValue = 0f
         for ((i, point) in landmarkList.withIndex()) {
@@ -432,33 +431,24 @@ class GestureClassifier(context: Context) {
             converted[i * 2 + 1] = y
             maxValue = maxOf(maxValue, kotlin.math.abs(x), kotlin.math.abs(y))
         }
-
         if (maxValue == 0f) return converted
-
-        // Normalizacja - dzielimy od razu na maxValue
         for (i in converted.indices) {
             converted[i] /= maxValue
         }
-
         return converted
     }
 
-    // Metoda przetwarzająca historię punktów (lista klatek) i normalizacja względem obrazu:
     fun preProcessPointHistory(
         imageSize: Pair<Int, Int>,
-        floatArrayList: List<FloatArray>  // każdy FloatArray to np. 12 floatów (6 punktów x,y)
+        floatArrayList: List<FloatArray>
     ): FloatArray {
         val imageWidth = imageSize.first.toFloat()
         val imageHeight = imageSize.second.toFloat()
-
         if (floatArrayList.isEmpty() || floatArrayList[0].isEmpty()) {
             return FloatArray(96) { 0f }
         }
-
-        // Zakładamy, że punkt bazowy to pierwszy (x,y) dwóch pierwszych floatów z pierwszej ramki
         val baseX = floatArrayList[0][0]
         val baseY = floatArrayList[0][1]
-
         val flatPoints = mutableListOf<Float>()
         for (frame in floatArrayList) {
             for (i in frame.indices step 2) {
@@ -468,32 +458,27 @@ class GestureClassifier(context: Context) {
                 flatPoints.add(y)
             }
         }
-
         return flatPoints.toFloatArray()
     }
 
     private fun loadLabelsListFromCsv(context: Context, csvFileName: String): List<String> =
         context.assets.open(csvFileName).bufferedReader().readLines()
 
-
-    fun classifyStatic(landmarks: FloatArray): Pair<Int, String?> {
-        val input = arrayOf(landmarks)
-        val output = Array(1) { FloatArray(numClassesStatic) }
-        interpreterStatic.run(input, output)
+    fun classify(
+        data: FloatArray,
+        type: ClassificationType
+    ): Pair<Int, String?> {
+        val (interpreter, numClasses, labels) = when (type) {
+            ClassificationType.STATIC -> Triple(interpreterStatic, numClassesStatic, staticLabels)
+            ClassificationType.DYNAMIC -> Triple(interpreterDynamic, numClassesDynamic, dynamicLabels)
+        }
+        val input = arrayOf(data)
+        val output = Array(1) { FloatArray(numClasses) }
+        interpreter.run(input, output)
         val predictedIdx = output[0].indices.maxByOrNull { output[0][it] } ?: -1
-        val label = staticLabels.getOrNull(predictedIdx)
+        val label = labels.getOrNull(predictedIdx)
         return Pair(predictedIdx, label)
     }
-
-    fun classifyDynamic(history: FloatArray): Pair<Int, String?> {
-        val input = arrayOf(history)
-        val output = Array(1) { FloatArray(numClassesDynamic) }
-        interpreterDynamic.run(input, output)
-        val predictedIdx = output[0].indices.maxByOrNull { output[0][it] } ?: -1
-        val label = dynamicLabels.getOrNull(predictedIdx)
-        return Pair(predictedIdx, label)
-    }
-
 }
 
 class LandmarkHistoryBuffer(val maxFrames: Int = 16, val numPoints: Int = 6) {
