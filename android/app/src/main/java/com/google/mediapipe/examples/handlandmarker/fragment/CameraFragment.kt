@@ -38,20 +38,27 @@ import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.core.content.ContextCompat
 import androidx.fragment.app.Fragment
 import androidx.fragment.app.activityViewModels
+import androidx.lifecycle.lifecycleScope
 import androidx.navigation.Navigation
-import com.google.mediapipe.examples.handlandmarker.GestureClassifier
+import com.google.mediapipe.examples.handlandmarker.signinterpretation.GestureClassifier
 import com.google.mediapipe.examples.handlandmarker.HandLandmarkerHelper
-import com.google.mediapipe.examples.handlandmarker.LandmarkHistoryBuffer
+import com.google.mediapipe.examples.handlandmarker.signinterpretation.LandmarkHistoryBuffer
 import com.google.mediapipe.examples.handlandmarker.MainViewModel
 import com.google.mediapipe.examples.handlandmarker.R
 import com.google.mediapipe.examples.handlandmarker.databinding.FragmentCameraBinding
+import com.google.mediapipe.examples.handlandmarker.signinterpretation.LetterEmitter
+import com.google.mediapipe.examples.handlandmarker.signinterpretation.StableStringListener
+import com.google.mediapipe.examples.handlandmarker.signinterpretation.TTSManager
+import com.google.mediapipe.examples.handlandmarker.signinterpretation.TextOutputManager
 import com.google.mediapipe.tasks.vision.core.RunningMode
 import java.util.Locale
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import com.google.mediapipe.tasks.components.containers.NormalizedLandmark
-import org.w3c.dom.Text
+import kotlinx.coroutines.Dispatchers
+import kotlin.collections.joinToString
+
 
 class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener {
 
@@ -67,6 +74,8 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener {
     private lateinit var handLandmarkerHelper: HandLandmarkerHelper
 
     lateinit var gestureClassifier: GestureClassifier
+    private val DYNAMIC_TYPE = GestureClassifier.ClassificationType.DYNAMIC
+    private val  STATIC_TYPE = GestureClassifier.ClassificationType.STATIC
     private lateinit var speakerButton: ImageButton
     private lateinit var editText: EditText
 
@@ -78,7 +87,7 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener {
     private lateinit var  labelsStatic: List<String>
     private lateinit var labelsDynamic: List<String>
 
-    val listener = StableStringListener(confirmationThreshold = 5, lastDisplayed = null)
+    val listener = StableStringListener(confirmationThreshold = 5, dispatcher = Dispatchers.Main)
     lateinit var textOutputManager: TextOutputManager
     lateinit var landmarkHistoryBuffer: LandmarkHistoryBuffer
 
@@ -159,11 +168,11 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener {
         labelsStatic = gestureClassifier.staticLabels
         labelsDynamic = gestureClassifier.dynamicLabels
         letterEmitter = LetterEmitter()
-        letterEmitter.staticList = kotlin.collections.ArrayDeque()
-        letterEmitter.dynamicList = kotlin.collections.ArrayDeque()
+        letterEmitter.clearStaticList()
+        letterEmitter.clearDynamicList()
+
         ttsManager = TTSManager(requireContext())
         editText = view.findViewById(R.id.textEdit)
-
 
         editText.addTextChangedListener(object : TextWatcher {
             override fun afterTextChanged(s: Editable?) {
@@ -178,9 +187,6 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener {
         })
 
         speakerButton = view.findViewById(R.id.speakerButton)
-        editText = view.findViewById(R.id.textEdit)
-        val editText = view.findViewById<EditText>(R.id.textEdit)
-
         speakerButton.setImageResource(playIcon)
 
         speakerButton.setOnClickListener {
@@ -192,9 +198,24 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener {
             }
         }
 
-
-
         backgroundExecutor = Executors.newSingleThreadExecutor()
+
+        // Obserwuj potwierdzone stringi z listenera
+        viewLifecycleOwner.lifecycleScope.launchWhenStarted {
+            listener.confirmedString.collect { confirmed ->
+                if (confirmed != null) {
+                    // Dodaj literę do menadżera tekstu
+                    textOutputManager.addLetter(confirmed)
+
+                    // Aktualizuj EditText na UI
+                    editText.setText(textOutputManager.getText())
+                    editText.setSelection(editText.text.length)
+
+                    // Wywołaj TTS dla potwierdzonej litery
+                    ttsManager.speak(confirmed)
+                }
+            }
+        }
 
         // Wait for the views to be properly laid out
         fragmentCameraBinding.viewFinder.post {
@@ -439,16 +460,14 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener {
     // Update UI after hand have been detected. Extracts original
     // image height/width to scale and place the landmarks properly through
     // OverlayView
-    override fun onResults(
-        resultBundle: HandLandmarkerHelper.ResultBundle
-    ) {
+    override fun onResults(resultBundle: HandLandmarkerHelper.ResultBundle) {
         val mResults = resultBundle.results.firstOrNull()
         val inputHeight = resultBundle.inputImageHeight
         val inputWidth = resultBundle.inputImageWidth
 
-
         if (mResults != null && mResults.landmarks().isNotEmpty()) {
             val landmarks = mResults.landmarks()[0]
+            Log.d("Landmarki: ", "$landmarks")
 
             // Przygotuj dynamiczne punkty (6 punktów x,y)
             val dynamicLandmarkPoints: List<FloatArray> = selectedIndices.map { idx ->
@@ -458,7 +477,7 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener {
             // Przygotuj statyczne punkty (21 punktów x,y) i klasyfikacja statyczna
             val allPoints: List<FloatArray> = landmarks.map { floatArrayOf(it.x(), it.y()) }
             val staticInput = gestureClassifier.landmarkConverter(allPoints)
-            val (_, staticLbl) = gestureClassifier.classifyStatic(staticInput)
+            val (_, staticLbl) = gestureClassifier.classify(staticInput, STATIC_TYPE)
 
             // Denormalizacja i dodanie do bufora
             val flatDynamicLandmarkPoints = dynamicLandmarkPoints.flatMap { it.toList() }.toFloatArray()
@@ -471,19 +490,23 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener {
                     Pair(inputWidth, inputHeight),
                     landmarkHistoryBuffer.toList()
                 )
-                gestureClassifier.classifyDynamic(processedHistory)
+                gestureClassifier.classify(processedHistory, DYNAMIC_TYPE)
             } else null
 
-            // Wywołaj notifyNewLetter nowej klasy LetterEmitter — ona sama załatwi filtrację i emitowanie opóźnione
+            // Dodaj etykiety do LetterEmitter
+            letterEmitter.addStaticLabel(staticLbl)
+            letterEmitter.addDynamicLabel(dynamicResult?.second)
 
-            val mostCommonStatic = letterEmitter.getMostCommonLetter(
-                letterEmitter.convertToStaticMatrix(staticLbl))
-            val mostCommonDynamic = letterEmitter.getMostCommonLetter(
-                letterEmitter.convertDynamicToMatrix(dynamicResult?.second))
+            val mostCommonStatic = letterEmitter.getMostCommonLetter(letterEmitter.getStaticList())
+            val mostCommonDynamic = letterEmitter.getMostCommonLetter(letterEmitter.getDynamicList())
 
-            val result: String? =  letterEmitter.decideWhichModel(mostCommonStatic, mostCommonDynamic)
-            textOutputManager.addLetter(listener.onNewString(result))
+            val result: String? = letterEmitter.decideWhichModel(mostCommonStatic, mostCommonDynamic)
 
+            // Przekaż wynik do listenera (nowa wersja nie zwraca wartości)
+            listener.onNewString(result)
+
+            // Obserwuj potwierdzone stringi gdzie indziej (np. w ViewModel lub Activity)
+            // Tutaj możesz ewentualnie zaktualizować UI na podstawie listener.confirmedString
 
             // Aktualizacja UI na bazie wyników modelem
             activity?.runOnUiThread {
@@ -491,10 +514,7 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener {
                     fragmentCameraBinding.bottomSheetLayout.inferenceTimeVal.text = String.format("%d ms", resultBundle.inferenceTime)
                     editText.setText(textOutputManager.getText())
                     editText.setSelection(editText.text.length)
-                    // Aktualizacja pola tekstowego odbywa się w callbacku LetterEmitter,
-                    // więc tutaj nie ustawiamy go ręcznie.
 
-                    // Rysujemy overlay
                     fragmentCameraBinding.overlay.setResults(
                         mResults,
                         inputHeight,
@@ -530,23 +550,7 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener {
         }
     }
 
-    private fun flattenAllLandmarksXY(landmarks: List<NormalizedLandmark>): FloatArray {
-        val arr = FloatArray(landmarks.size * 2)
-        for ((i, lm) in landmarks.withIndex()) {
-            arr[i * 2] = lm.x()
-            arr[i * 2 + 1] = lm.y()
-        }
-        return arr
-    }
 
-    private fun select6LandmarksXY(landmarks: List<NormalizedLandmark>): FloatArray {
-        val arr = FloatArray(selectedIndices.size * 2)
-        for ((i, idx) in selectedIndices.withIndex()) {
-            arr[i * 2] = landmarks[idx].x()
-            arr[i * 2 + 1] = landmarks[idx].y()
-        }
-        return arr
-    }
 }
 
 

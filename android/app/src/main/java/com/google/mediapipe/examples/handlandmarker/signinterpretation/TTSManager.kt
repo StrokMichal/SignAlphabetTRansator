@@ -1,4 +1,4 @@
-package com.google.mediapipe.examples.handlandmarker.fragment
+package com.google.mediapipe.examples.handlandmarker.signinterpretation
 
 import android.content.Context
 import android.speech.tts.TextToSpeech
