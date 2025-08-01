@@ -38,7 +38,9 @@ import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.core.content.ContextCompat
 import androidx.fragment.app.Fragment
 import androidx.fragment.app.activityViewModels
+import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
 import androidx.navigation.Navigation
 import com.google.mediapipe.examples.handlandmarker.signinterpretation.GestureClassifier
 import com.google.mediapipe.examples.handlandmarker.HandLandmarkerHelper
@@ -46,6 +48,7 @@ import com.google.mediapipe.examples.handlandmarker.signinterpretation.LandmarkH
 import com.google.mediapipe.examples.handlandmarker.MainViewModel
 import com.google.mediapipe.examples.handlandmarker.R
 import com.google.mediapipe.examples.handlandmarker.databinding.FragmentCameraBinding
+import com.google.mediapipe.examples.handlandmarker.signinterpretation.GestureInterpreter
 import com.google.mediapipe.examples.handlandmarker.signinterpretation.LetterEmitter
 import com.google.mediapipe.examples.handlandmarker.signinterpretation.StableStringListener
 import com.google.mediapipe.examples.handlandmarker.signinterpretation.TTSManager
@@ -74,20 +77,21 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener {
     private lateinit var handLandmarkerHelper: HandLandmarkerHelper
 
     lateinit var gestureClassifier: GestureClassifier
-    private val DYNAMIC_TYPE = GestureClassifier.ClassificationType.DYNAMIC
-    private val  STATIC_TYPE = GestureClassifier.ClassificationType.STATIC
+
     private lateinit var speakerButton: ImageButton
     private lateinit var editText: EditText
+    private lateinit var gestureInterpreter : GestureInterpreter
 
     private val playIcon = R.drawable.baseline_play_circle_outline_24
     private val replayIcon = R.drawable.baseline_replay_24
+
     //todo SHUT THE FUCK UP BUTTON
     private var isInReplayMode = false
     private lateinit var letterEmitter: LetterEmitter
-    private lateinit var  labelsStatic: List<String>
+    private lateinit var labelsStatic: List<String>
     private lateinit var labelsDynamic: List<String>
 
-    val listener = StableStringListener(confirmationThreshold = 5, dispatcher = Dispatchers.Main)
+    var listener = StableStringListener(confirmationThreshold = 5, dispatcher = Dispatchers.Main)
     lateinit var textOutputManager: TextOutputManager
     lateinit var landmarkHistoryBuffer: LandmarkHistoryBuffer
 
@@ -98,7 +102,7 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener {
     private var camera: Camera? = null
     private var cameraProvider: ProcessCameraProvider? = null
     private var cameraFacing = CameraSelector.LENS_FACING_FRONT
-    private val selectedIndices = listOf(0, 4, 8, 12, 16, 20)
+
 
     /** Blocking ML operations are performed using this executor */
     private lateinit var backgroundExecutor: ExecutorService
@@ -124,7 +128,7 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener {
 
     override fun onPause() {
         super.onPause()
-        if(this::handLandmarkerHelper.isInitialized) {
+        if (this::handLandmarkerHelper.isInitialized) {
             viewModel.setMaxHands(handLandmarkerHelper.maxNumHands)
             viewModel.setMinHandDetectionConfidence(handLandmarkerHelper.minHandDetectionConfidence)
             viewModel.setMinHandTrackingConfidence(handLandmarkerHelper.minHandTrackingConfidence)
@@ -162,18 +166,29 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener {
     @SuppressLint("MissingPermission")
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
+
+        // Inicjalizacja zależności
         textOutputManager = TextOutputManager()
         gestureClassifier = GestureClassifier(requireContext())
         landmarkHistoryBuffer = LandmarkHistoryBuffer(maxFrames = 16, numPoints = 12)
-        labelsStatic = gestureClassifier.staticLabels
-        labelsDynamic = gestureClassifier.dynamicLabels
         letterEmitter = LetterEmitter()
         letterEmitter.clearStaticList()
         letterEmitter.clearDynamicList()
+        listener = StableStringListener() // upewnij się, że listener jest zainicjalizowany
+
+        gestureInterpreter = GestureInterpreter(
+            gestureClassifier,
+            landmarkHistoryBuffer,
+            letterEmitter,
+            listener,
+        )
 
         ttsManager = TTSManager(requireContext())
-        editText = view.findViewById(R.id.textEdit)
 
+        editText = view.findViewById(R.id.textEdit)
+        speakerButton = view.findViewById(R.id.speakerButton)
+
+        // TextWatcher
         editText.addTextChangedListener(object : TextWatcher {
             override fun afterTextChanged(s: Editable?) {
                 textOutputManager.setText(s.toString())
@@ -186,9 +201,7 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener {
             override fun onTextChanged(s: CharSequence?, start: Int, before: Int, count: Int) {}
         })
 
-        speakerButton = view.findViewById(R.id.speakerButton)
         speakerButton.setImageResource(playIcon)
-
         speakerButton.setOnClickListener {
             val textToSpeak = editText.text.toString()
             ttsManager.speak(textToSpeak)
@@ -200,35 +213,30 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener {
 
         backgroundExecutor = Executors.newSingleThreadExecutor()
 
-        // Obserwuj potwierdzone stringi z listenera
-        viewLifecycleOwner.lifecycleScope.launchWhenStarted {
-            listener.confirmedString.collect { confirmed ->
-                if (confirmed != null) {
-                    // Dodaj literę do menadżera tekstu
-                    textOutputManager.addLetter(confirmed)
-
-                    // Aktualizuj EditText na UI
-                    editText.setText(textOutputManager.getText())
-                    editText.setSelection(editText.text.length)
-
-                    // Wywołaj TTS dla potwierdzonej litery
-                    ttsManager.speak(confirmed)
-                    landmarkHistoryBuffer.clear()
-                    letterEmitter.clearStaticList()
-                    letterEmitter.clearDynamicList()
-                    listener.reset()
+        // Obserwacja potwierdzonych liter
+        viewLifecycleOwner.lifecycleScope.launch {
+            viewLifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
+                listener.confirmedString.collect { confirmed ->
+                    if (confirmed != null) {
+                        textOutputManager.addLetter(confirmed)
+                        editText.setText(textOutputManager.getText())
+                        editText.setSelection(editText.text.length)
+                        ttsManager.speak(confirmed)
+                        landmarkHistoryBuffer.clear()
+                        letterEmitter.clearStaticList()
+                        letterEmitter.clearDynamicList()
+                        listener.reset()
+                    }
                 }
             }
         }
 
-        // Wait for the views to be properly laid out
+        // Ustawienie kamery po ułożeniu widoków
         fragmentCameraBinding.viewFinder.post {
-            // Set up the camera and its use cases
             setUpCamera()
         }
 
-
-        // Create the HandLandmarkerHelper that will handle the inference
+        // Inicjalizacja HandLandmarkerHelper w tle
         backgroundExecutor.execute {
             handLandmarkerHelper = HandLandmarkerHelper(
                 context = requireContext(),
@@ -242,7 +250,7 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener {
             )
         }
 
-        // Attach listeners to UI control widgets
+        // Inicjalizacja kontrolek UI
         initBottomSheetControls()
     }
 
@@ -342,7 +350,7 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener {
                     try {
                         handLandmarkerHelper.currentDelegate = p2
                         updateControlsUi()
-                    } catch(e: UninitializedPropertyAccessException) {
+                    } catch (e: UninitializedPropertyAccessException) {
                         Log.e(TAG, "HandLandmarkerHelper has not been initialized yet.")
                     }
                 }
@@ -469,65 +477,22 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener {
         val inputHeight = resultBundle.inputImageHeight
         val inputWidth = resultBundle.inputImageWidth
 
-        if (mResults != null && mResults.landmarks().isNotEmpty()) {
-            val landmarks = mResults.landmarks()[0]
-            Log.d("Landmarki: ", "$landmarks")
-
-            // Przygotuj dynamiczne punkty (6 punktów x,y)
-            val dynamicLandmarkPoints: List<FloatArray> = selectedIndices.map { idx ->
-                floatArrayOf(landmarks[idx].x(), landmarks[idx].y())
-            }
-
-            // Przygotuj statyczne punkty (21 punktów x,y)
-            val allPoints: List<FloatArray> = landmarks.map { floatArrayOf(it.x(), it.y()) }
-
-            // Uruchom coroutine
-            viewLifecycleOwner.lifecycleScope.launch {
-                // Ciężkie operacje w tle
-                val (staticLbl, dynamicResult, denormalizedPoints) = withContext(Dispatchers.Default) {
-                    val staticInput = gestureClassifier.landmarkConverter(allPoints)
-                    val staticClassification = gestureClassifier.classify(staticInput, STATIC_TYPE)
-
-                    val flatDynamicLandmarkPoints = FloatArray(dynamicLandmarkPoints.size * 2)
-                    var index = 0
-                    for (point in dynamicLandmarkPoints) {
-                        flatDynamicLandmarkPoints[index++] = point[0]
-                        flatDynamicLandmarkPoints[index++] = point[1]
+        viewLifecycleOwner.lifecycleScope.launch {
+            if (mResults != null) {
+                val firstHandLandmarks = mResults.landmarks().firstOrNull()
+                if (firstHandLandmarks != null) {
+                    val landmarksFloatArray = firstHandLandmarks.map { landmark ->
+                        floatArrayOf(landmark.x(), landmark.y())
                     }
 
-                    val denormPoints = landmarkHistoryBuffer.denormalizePoints(flatDynamicLandmarkPoints, inputWidth, inputHeight)
-                    landmarkHistoryBuffer.addFrame(denormPoints)
-
-                    val dynamicClassification = if (landmarkHistoryBuffer.isFull()) {
-                        val processedHistory = gestureClassifier.preProcessPointHistory(
-                            Pair(inputWidth, inputHeight),
-                            landmarkHistoryBuffer.toList()
-                        )
-                        gestureClassifier.classify(processedHistory, DYNAMIC_TYPE)
-                    } else null
-
-                    Triple(staticClassification.second, dynamicClassification, denormPoints)
+                    gestureInterpreter.interpret(landmarksFloatArray, inputWidth, inputHeight)
                 }
 
-                // Dodaj etykiety do LetterEmitter
-                letterEmitter.addStaticLabel(staticLbl)
-                letterEmitter.addDynamicLabel(dynamicResult?.second)
-
-                val staticListSnapshot = letterEmitter.getStaticList()
-                val dynamicListSnapshot = letterEmitter.getDynamicList()
-
-                val mostCommonStatic = letterEmitter.getMostCommonLetter(staticListSnapshot)
-                val mostCommonDynamic = letterEmitter.getMostCommonLetter(dynamicListSnapshot)
-
-                val result: String? = letterEmitter.decideWhichModel(mostCommonStatic, mostCommonDynamic)
-
-                // Przekaż wynik do listenera
-                listener.onNewString(result)
-
                 // Aktualizacja UI na wątku głównym
-                withContext(Dispatchers.Main)  {
+                withContext(Dispatchers.Main) {
                     if (_fragmentCameraBinding != null) {
-                        fragmentCameraBinding.bottomSheetLayout.inferenceTimeVal.text = String.format("%d ms", resultBundle.inferenceTime)
+                        fragmentCameraBinding.bottomSheetLayout.inferenceTimeVal.text =
+                            String.format("%d ms", resultBundle.inferenceTime)
 
                         val newText = textOutputManager.getText()
                         if (editText.text.toString() != newText) {
@@ -544,9 +509,8 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener {
                         fragmentCameraBinding.overlay.invalidate()
                     }
                 }
-            }
-        } else {
-            viewLifecycleOwner.lifecycleScope.launch {
+            } else {
+                // Brak dłoni — czyścimy wszystko na UI
                 withContext(Dispatchers.Main) {
                     landmarkHistoryBuffer.clear()
                     letterEmitter.clearStaticList()
