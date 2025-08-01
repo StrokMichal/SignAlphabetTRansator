@@ -24,13 +24,6 @@ class LandmarkHistoryBuffer(val maxFrames: Int = 16, val numPoints: Int = 12) {
         buffer.addLast(frame)
     }
 
-    fun getFlatArray(): FloatArray {
-        val arr = FloatArray(maxFrames * numPoints)
-        buffer.forEachIndexed { idx, f ->
-            System.arraycopy(f, 0, arr, idx * numPoints, numPoints)
-        }
-        return arr
-    }
 
     fun isFull(): Boolean = buffer.size == maxFrames
     fun clear() = buffer.clear()

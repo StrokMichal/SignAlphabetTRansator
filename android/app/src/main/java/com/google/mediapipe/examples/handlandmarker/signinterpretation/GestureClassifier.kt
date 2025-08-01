@@ -35,7 +35,7 @@ class GestureClassifier(context: Context ) {
 
     init {
         interpreterStatic = Interpreter(loadModelFile(context, "model_static.tflite"))
-        interpreterDynamic = Interpreter(loadModelFile(context, "model_dynamic.tflite"))
+        interpreterDynamic = Interpreter(loadModelFile(context, "point_history_classifier16xx.tflite"))
 
         staticLabels = loadLabelsListFromCsv(context, "labels_static.csv")
         dynamicLabels = loadLabelsListFromCsv(context, "labels_dynamic.csv")

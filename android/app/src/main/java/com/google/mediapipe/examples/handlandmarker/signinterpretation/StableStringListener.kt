@@ -4,8 +4,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 
 class StableStringListener(
-    private val confirmationThreshold: Int = 7,
-    private val delayMs: Long = 1500,
+    private val confirmationThreshold: Int = 8,
+    private val delayMs: Long = 1200,
     private val dispatcher: CoroutineDispatcher = Dispatchers.Main
 ) {
     private var currentString: String? = null

@@ -55,9 +55,9 @@ import java.util.Locale
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
-import com.google.mediapipe.tasks.components.containers.NormalizedLandmark
 import kotlinx.coroutines.Dispatchers
-import kotlin.collections.joinToString
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 
 class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener {
@@ -213,6 +213,10 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener {
 
                     // Wywołaj TTS dla potwierdzonej litery
                     ttsManager.speak(confirmed)
+                    landmarkHistoryBuffer.clear()
+                    letterEmitter.clearStaticList()
+                    letterEmitter.clearDynamicList()
+                    listener.reset()
                 }
             }
         }
@@ -474,66 +478,85 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener {
                 floatArrayOf(landmarks[idx].x(), landmarks[idx].y())
             }
 
-            // Przygotuj statyczne punkty (21 punktów x,y) i klasyfikacja statyczna
+            // Przygotuj statyczne punkty (21 punktów x,y)
             val allPoints: List<FloatArray> = landmarks.map { floatArrayOf(it.x(), it.y()) }
-            val staticInput = gestureClassifier.landmarkConverter(allPoints)
-            val (_, staticLbl) = gestureClassifier.classify(staticInput, STATIC_TYPE)
 
-            // Denormalizacja i dodanie do bufora
-            val flatDynamicLandmarkPoints = dynamicLandmarkPoints.flatMap { it.toList() }.toFloatArray()
-            val denormalizedPoints = landmarkHistoryBuffer.denormalizePoints(flatDynamicLandmarkPoints, inputWidth, inputHeight)
-            landmarkHistoryBuffer.addFrame(denormalizedPoints)
+            // Uruchom coroutine
+            viewLifecycleOwner.lifecycleScope.launch {
+                // Ciężkie operacje w tle
+                val (staticLbl, dynamicResult, denormalizedPoints) = withContext(Dispatchers.Default) {
+                    val staticInput = gestureClassifier.landmarkConverter(allPoints)
+                    val staticClassification = gestureClassifier.classify(staticInput, STATIC_TYPE)
 
-            // Klasyfikacja dynamiczna jeśli bufor pełny
-            val dynamicResult: Pair<Int, String?>? = if (landmarkHistoryBuffer.isFull()) {
-                val processedHistory = gestureClassifier.preProcessPointHistory(
-                    Pair(inputWidth, inputHeight),
-                    landmarkHistoryBuffer.toList()
-                )
-                gestureClassifier.classify(processedHistory, DYNAMIC_TYPE)
-            } else null
+                    val flatDynamicLandmarkPoints = FloatArray(dynamicLandmarkPoints.size * 2)
+                    var index = 0
+                    for (point in dynamicLandmarkPoints) {
+                        flatDynamicLandmarkPoints[index++] = point[0]
+                        flatDynamicLandmarkPoints[index++] = point[1]
+                    }
 
-            // Dodaj etykiety do LetterEmitter
-            letterEmitter.addStaticLabel(staticLbl)
-            letterEmitter.addDynamicLabel(dynamicResult?.second)
+                    val denormPoints = landmarkHistoryBuffer.denormalizePoints(flatDynamicLandmarkPoints, inputWidth, inputHeight)
+                    landmarkHistoryBuffer.addFrame(denormPoints)
 
-            val mostCommonStatic = letterEmitter.getMostCommonLetter(letterEmitter.getStaticList())
-            val mostCommonDynamic = letterEmitter.getMostCommonLetter(letterEmitter.getDynamicList())
+                    val dynamicClassification = if (landmarkHistoryBuffer.isFull()) {
+                        val processedHistory = gestureClassifier.preProcessPointHistory(
+                            Pair(inputWidth, inputHeight),
+                            landmarkHistoryBuffer.toList()
+                        )
+                        gestureClassifier.classify(processedHistory, DYNAMIC_TYPE)
+                    } else null
 
-            val result: String? = letterEmitter.decideWhichModel(mostCommonStatic, mostCommonDynamic)
+                    Triple(staticClassification.second, dynamicClassification, denormPoints)
+                }
 
-            // Przekaż wynik do listenera (nowa wersja nie zwraca wartości)
-            listener.onNewString(result)
+                // Dodaj etykiety do LetterEmitter
+                letterEmitter.addStaticLabel(staticLbl)
+                letterEmitter.addDynamicLabel(dynamicResult?.second)
 
-            // Obserwuj potwierdzone stringi gdzie indziej (np. w ViewModel lub Activity)
-            // Tutaj możesz ewentualnie zaktualizować UI na podstawie listener.confirmedString
+                val staticListSnapshot = letterEmitter.getStaticList()
+                val dynamicListSnapshot = letterEmitter.getDynamicList()
 
-            // Aktualizacja UI na bazie wyników modelem
-            activity?.runOnUiThread {
-                if (_fragmentCameraBinding != null) {
-                    fragmentCameraBinding.bottomSheetLayout.inferenceTimeVal.text = String.format("%d ms", resultBundle.inferenceTime)
-                    editText.setText(textOutputManager.getText())
-                    editText.setSelection(editText.text.length)
+                val mostCommonStatic = letterEmitter.getMostCommonLetter(staticListSnapshot)
+                val mostCommonDynamic = letterEmitter.getMostCommonLetter(dynamicListSnapshot)
 
-                    fragmentCameraBinding.overlay.setResults(
-                        mResults,
-                        inputHeight,
-                        inputWidth,
-                        RunningMode.LIVE_STREAM
-                    )
-                    fragmentCameraBinding.overlay.invalidate()
+                val result: String? = letterEmitter.decideWhichModel(mostCommonStatic, mostCommonDynamic)
+
+                // Przekaż wynik do listenera
+                listener.onNewString(result)
+
+                // Aktualizacja UI na wątku głównym
+                withContext(Dispatchers.Main)  {
+                    if (_fragmentCameraBinding != null) {
+                        fragmentCameraBinding.bottomSheetLayout.inferenceTimeVal.text = String.format("%d ms", resultBundle.inferenceTime)
+
+                        val newText = textOutputManager.getText()
+                        if (editText.text.toString() != newText) {
+                            editText.setText(newText)
+                            editText.setSelection(newText.length)
+                        }
+
+                        fragmentCameraBinding.overlay.setResults(
+                            mResults,
+                            inputHeight,
+                            inputWidth,
+                            RunningMode.LIVE_STREAM
+                        )
+                        fragmentCameraBinding.overlay.invalidate()
+                    }
                 }
             }
         } else {
-            // Brak dłoni — czyścimy wszystko
-            landmarkHistoryBuffer.clear()
+            viewLifecycleOwner.lifecycleScope.launch {
+                withContext(Dispatchers.Main) {
+                    landmarkHistoryBuffer.clear()
+                    letterEmitter.clearStaticList()
+                    letterEmitter.clearDynamicList()
+                    listener.clear()
 
-            activity?.runOnUiThread {
-                if (_fragmentCameraBinding != null) {
-                    fragmentCameraBinding.overlay.clear() // jeżeli masz w overlay metodę clear()
-                    fragmentCameraBinding.overlay.invalidate()
-                    //fragmentCameraBinding.staticResultTextView.text = "-"
-                    //fragmentCameraBinding.dynamicResultTextView.text = "-"
+                    if (_fragmentCameraBinding != null) {
+                        fragmentCameraBinding.overlay.clear()
+                        fragmentCameraBinding.overlay.invalidate()
+                    }
                 }
             }
         }
