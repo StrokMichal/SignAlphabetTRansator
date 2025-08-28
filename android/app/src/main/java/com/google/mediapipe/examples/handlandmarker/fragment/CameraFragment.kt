@@ -342,6 +342,7 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener {
         fragmentCameraBinding.bottomSheetLayout.spinnerDelegate.setSelection(
             viewModel.currentDelegate, false
         )
+        Log.d(TAG, "currentDelegate ${viewModel.currentDelegate}")
         fragmentCameraBinding.bottomSheetLayout.spinnerDelegate.onItemSelectedListener =
             object : AdapterView.OnItemSelectedListener {
                 override fun onItemSelected(
@@ -390,6 +391,8 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener {
         backgroundExecutor.execute {
             handLandmarkerHelper.clearHandLandmarker()
             handLandmarkerHelper.setupHandLandmarker()
+
+
         }
         fragmentCameraBinding.overlay.clear()
     }
@@ -531,7 +534,7 @@ class CameraFragment : Fragment(), HandLandmarkerHelper.LandmarkerListener {
             Toast.makeText(requireContext(), error, Toast.LENGTH_SHORT).show()
             if (errorCode == HandLandmarkerHelper.GPU_ERROR) {
                 fragmentCameraBinding.bottomSheetLayout.spinnerDelegate.setSelection(
-                    HandLandmarkerHelper.DELEGATE_CPU, false
+                    HandLandmarkerHelper.DELEGATE_GPU, false
                 )
             }
         }

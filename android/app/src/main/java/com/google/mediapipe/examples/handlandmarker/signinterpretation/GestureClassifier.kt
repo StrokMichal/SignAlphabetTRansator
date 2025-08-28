@@ -2,77 +2,177 @@ package com.google.mediapipe.examples.handlandmarker.signinterpretation
 
 import android.content.Context
 import android.util.Log
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import org.tensorflow.lite.Interpreter
 import java.io.FileInputStream
 import java.nio.MappedByteBuffer
 import java.nio.channels.FileChannel
-data class Quadruple<A, B, C, D, E>(
-    val first: A,
-    val second: B,
-    val third: C,
-    val fourth: D,
-    val fifth: E
-)
-class GestureClassifier(context: Context ) {
-    enum class ClassificationType {
-        STATIC, DYNAMIC
-    }
 
+class GestureClassifier(
+    context: Context,
+    modelStaticAsset: String = "model_static.tflite",
+    modelDynamicAsset: String = "model_dynamic.tflite",
+    private val tfliteNumThreads: Int = 4
+) {
+    enum class ClassificationType { STATIC, DYNAMIC }
+
+    private val TAG = "GestureClassifier"
 
     private val interpreterStatic: Interpreter
     private val interpreterDynamic: Interpreter
 
-    private val inputStatic: Array<FloatArray>
-    private val outputStatic: Array<FloatArray>
+    private val mutexStatic = Mutex()
+    private val mutexDynamic = Mutex()
 
-    private val inputDynamic: Array<FloatArray>
-    private val outputDynamic: Array<FloatArray>
+    // Buffers (Array<FloatArray>) — element 0 is actual flattened vector
+    private var inputStatic: Array<FloatArray>
+    private var outputStatic: Array<FloatArray>
+
+    private var inputDynamic: Array<FloatArray>
+    private var outputDynamic: Array<FloatArray>
 
     val staticLabels: List<String>
     val dynamicLabels: List<String>
-    val numClassesStatic: Int
-    val numClassesDynamic: Int
 
     init {
-        interpreterStatic = Interpreter(loadModelFile(context, "model_static.tflite"))
-        interpreterDynamic = Interpreter(loadModelFile(context, "point_history_classifier16xx.tflite"))
+        val options = Interpreter.Options().apply {
+            setNumThreads(tfliteNumThreads)
+            // add delegates here if needed (GPU, NNAPI, etc.) BEFORE creating Interpreter
+        }
+
+        interpreterStatic = Interpreter(loadModelFile(context, modelStaticAsset), options)
+        interpreterDynamic = Interpreter(loadModelFile(context, modelDynamicAsset), options)
+
+        // Ensure tensors are allocated so shapes are available
+        interpreterStatic.allocateTensors()
+        interpreterDynamic.allocateTensors()
 
         staticLabels = loadLabelsListFromCsv(context, "labels_static.csv")
         dynamicLabels = loadLabelsListFromCsv(context, "labels_dynamic.csv")
 
-        numClassesStatic = staticLabels.size
-        numClassesDynamic = dynamicLabels.size
+        // Prepare initial buffers based on interpreter tensor shapes
+        val inLenStatic = getFlattenedInputLen(interpreterStatic)
+        val inLenDynamic = getFlattenedInputLen(interpreterDynamic)
 
-        // Tutaj musisz podać rozmiar wejścia modelu, nie liczby klas
-        // Załóżmy, że masz funkcję getInputSize(interpreter) zwracającą rozmiar FloatArray wejścia
-        val inputSizeStatic = getInputSize(interpreterStatic)
-        val inputSizeDynamic = getInputSize(interpreterDynamic)
+        val outLenStatic = getFlattenedOutputLen(interpreterStatic)
+        val outLenDynamic = getFlattenedOutputLen(interpreterDynamic)
 
-        inputStatic = arrayOf(FloatArray(inputSizeStatic))
-        outputStatic = Array(1) { FloatArray(numClassesStatic) }
+        inputStatic = arrayOf(FloatArray(inLenStatic))
+        outputStatic = arrayOf(FloatArray(outLenStatic))
 
-        inputDynamic = arrayOf(FloatArray(inputSizeDynamic))
-        outputDynamic = Array(1) { FloatArray(numClassesDynamic) }
+        inputDynamic = arrayOf(FloatArray(inLenDynamic))
+        outputDynamic = arrayOf(FloatArray(outLenDynamic))
 
-        Log.d("GestureClassifier", "------------------------Instance created-------------------------------------------------------")
+        Log.d(TAG, "Initialized. static inLen=$inLenStatic outLen=$outLenStatic dynamic inLen=$inLenDynamic outLen=$outLenDynamic")
     }
-    private fun getInputSize(interpreter: Interpreter): Int {
-        val inputShape = interpreter.getInputTensor(0).shape() // np. [1, 32]
-        // Załóżmy, że interesuje nas wymiar 1 (pomijamy batch size)
-        return inputShape.drop(1).reduce { acc, i -> acc * i }
-    }
-
-
 
     private fun loadModelFile(context: Context, modelFile: String): MappedByteBuffer {
-        val fileDescriptor = context.assets.openFd(modelFile)
-        val inputStream = FileInputStream(fileDescriptor.fileDescriptor)
-        val fileChannel = inputStream.channel
-        val startOffset = fileDescriptor.startOffset
-        val declaredLength = fileDescriptor.declaredLength
-        return fileChannel.map(FileChannel.MapMode.READ_ONLY, startOffset, declaredLength)
+        context.assets.openFd(modelFile).use { afd ->
+            FileInputStream(afd.fileDescriptor).use { fis ->
+                val channel: FileChannel = fis.channel
+                return channel.map(FileChannel.MapMode.READ_ONLY, afd.startOffset, afd.declaredLength)
+            }
+        }
     }
 
+    private fun loadLabelsListFromCsv(context: Context, csvFileName: String): List<String> =
+        context.assets.open(csvFileName).bufferedReader().use { it.readLines() }
+
+    private fun getFlattenedInputLen(interpreter: Interpreter): Int {
+        val shape = interpreter.getInputTensor(0).shape() // e.g. [1, N] or [1, H, W, C]
+        // Compute product of dims excluding batch dimension (index 0)
+        return if (shape.size >= 2) shape.drop(1).fold(1) { acc, v -> acc * v } else shape[0]
+    }
+
+    private fun getFlattenedOutputLen(interpreter: Interpreter): Int {
+        val shape = interpreter.getOutputTensor(0).shape()
+        return if (shape.size >= 2) shape.drop(1).fold(1) { acc, v -> acc * v } else shape[0]
+    }
+
+    /**
+     * Classify flattened vector 'data' for chosen model type.
+     * Call from coroutine (Dispatchers.Default / IO).
+     */
+    suspend fun classify(data: FloatArray, type: ClassificationType): Pair<Int, String?> {
+        return when (type) {
+            ClassificationType.STATIC -> mutexStatic.withLock {
+                runInference(interpreterStatic, data, inputStatic, outputStatic, staticLabels, "STATIC")
+            }
+            ClassificationType.DYNAMIC -> mutexDynamic.withLock {
+                runInference(interpreterDynamic, data, inputDynamic, outputDynamic, dynamicLabels, "DYNAMIC")
+            }
+        }
+    }
+
+    private fun runInference(
+        interpreter: Interpreter,
+        data: FloatArray,
+        inputArray: Array<FloatArray>,
+        outputArray: Array<FloatArray>,
+        labels: List<String>,
+        modelName: String
+    ): Pair<Int, String?> {
+        try {
+            var inputShape = interpreter.getInputTensor(0).shape()
+            var expectedLen = if (inputShape.size >= 2) inputShape.drop(1).fold(1) { acc, v -> acc * v } else inputShape[0]
+
+            Log.d(TAG, "[$modelName] inputShape=${inputShape.contentToString()} expectedLen=$expectedLen dataLen=${data.size}")
+
+            // If mismatch and input is simple 2D [1, N], resize and allocate
+            if (expectedLen != data.size) {
+                if (inputShape.size == 2) {
+                    Log.w(TAG, "[$modelName] Input length mismatch. Resizing to [1, ${data.size}]")
+                    interpreter.resizeInput(0, intArrayOf(1, data.size))
+                    interpreter.allocateTensors()
+                    // refresh shapes and expectedLen
+                    inputShape = interpreter.getInputTensor(0).shape()
+                    expectedLen = if (inputShape.size >= 2) inputShape.drop(1).fold(1) { acc, v -> acc * v } else inputShape[0]
+                    // update input buffer element (don't replace outer array ref — modify element)
+                    inputArray[0] = FloatArray(expectedLen)
+                    // update output buffer if needed
+                    val outLen = getFlattenedOutputLen(interpreter)
+                    if (outputArray.isEmpty() || outputArray[0].size != outLen) {
+                        outputArray[0] = FloatArray(outLen)
+                    }
+                    Log.d(TAG, "[$modelName] Resized. New inputShape=${inputShape.contentToString()} newOutLen=${outputArray[0].size}")
+                } else {
+                    val msg = "[$modelName] Input length mismatch but automatic resize not supported for multi-dim input shape=${inputShape.contentToString()}. dataLen=${data.size}"
+                    Log.e(TAG, msg)
+                    throw IllegalArgumentException(msg)
+                }
+            }
+
+            // Validate buffer size
+            if (data.size > inputArray[0].size) {
+                // Defensive: shouldn't happen after resize, but ensure capacity
+                inputArray[0] = FloatArray(data.size)
+            }
+
+            // Copy data
+            System.arraycopy(data, 0, inputArray[0], 0, data.size)
+
+            // Run
+            interpreter.run(inputArray, outputArray)
+
+            val scores = outputArray[0]
+            val predictedIdx = scores.withIndex().maxByOrNull { it.value }?.index ?: -1
+            val label = labels.getOrNull(predictedIdx)
+
+            Log.d(TAG, "[$modelName] Predicted idx=$predictedIdx label=$label score=${if (predictedIdx >= 0) scores[predictedIdx] else "n/a"}")
+            return Pair(predictedIdx, label)
+        } catch (e: Exception) {
+            // diagnostic: shapes
+            try {
+                val inShapes = (0 until interpreter.inputTensorCount).map { i -> interpreter.getInputTensor(i).shape().contentToString() }
+                val outShapes = (0 until interpreter.outputTensorCount).map { i -> interpreter.getOutputTensor(i).shape().contentToString() }
+                Log.e(TAG, "[$modelName] Interpreter.run failed: ${e.message}. inShapes=$inShapes outShapes=$outShapes", e)
+            } catch (inner: Exception) {
+                Log.e(TAG, "[$modelName] Failed and couldn't read tensor shapes: ${inner.message}", inner)
+            }
+            throw e
+        }
+    }
     fun landmarkConverter(landmarkList: List<FloatArray>): FloatArray {
         if (landmarkList.isEmpty()) return FloatArray(0)
         val baseX = landmarkList[0][0]
@@ -97,14 +197,16 @@ class GestureClassifier(context: Context ) {
         }
         return converted
     }
-
     fun preProcessPointHistory(
-        imageSize: Pair<Int, Int>,
-        floatArrayList: List<FloatArray>
+    imageSize: Pair<Int, Int>,
+    floatArrayList: List<FloatArray>
     ): FloatArray {
         val imageWidth = imageSize.first.toFloat()
         val imageHeight = imageSize.second.toFloat()
+        //Log.d("GestureClassifier", "Image size: width=$imageWidth, height=$imageHeight")
+
         if (floatArrayList.isEmpty() || floatArrayList[0].isEmpty()) {
+            //Log.w("GestureClassifier", "Input floatArrayList is empty or first element is empty")
             return FloatArray(96) { 0f }
         }
         val baseX = floatArrayList[0][0]
@@ -120,30 +222,22 @@ class GestureClassifier(context: Context ) {
                 flatPoints[index++] = (frame[i + 1] - baseY) / imageHeight
             }
         }
+        //Log.d("GestureClassifier", "Processed history size: ${flatPoints.size}")
+        //Log.d("GestureClassifier", "Processed history sample: ${flatPoints.take(10)}")
         return flatPoints
     }
 
-
-    private fun loadLabelsListFromCsv(context: Context, csvFileName: String): List<String> =
-        context.assets.open(csvFileName).bufferedReader().readLines()
-
-    fun classify(
-        data: FloatArray,
-        type: ClassificationType
-    ): Pair<Int, String?> {
-        val (interpreter, numClasses, labels, input, output) = when (type) {
-            ClassificationType.STATIC -> Quadruple(interpreterStatic, numClassesStatic, staticLabels, inputStatic, outputStatic)
-            ClassificationType.DYNAMIC -> Quadruple(interpreterDynamic, numClassesDynamic, dynamicLabels, inputDynamic, outputDynamic)
+    /**
+     * Close interpreters. Call from lifecycle onDestroy / ViewModel.onCleared.
+     */
+    suspend fun close() {
+        // Acquire locks to ensure no inference in progress.
+        mutexStatic.withLock {
+            mutexDynamic.withLock {
+                try { interpreterStatic.close() } catch (_: Exception) {}
+                try { interpreterDynamic.close() } catch (_: Exception) {}
+                Log.d(TAG, "Interpreters closed")
+            }
         }
-
-        // Kopiujemy dane do input[0]
-        System.arraycopy(data, 0, input[0], 0, data.size)
-
-        interpreter.run(input, output)
-
-        val predictedIdx = output[0].withIndex().maxByOrNull { it.value }?.index ?: -1
-
-        val label = labels.getOrNull(predictedIdx)
-        return Pair(predictedIdx, label)
     }
 }

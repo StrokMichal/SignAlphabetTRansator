@@ -4,9 +4,14 @@ class LetterEmitter {
     private val staticList = ArrayDeque<String>()
     private val dynamicList = ArrayDeque<String>()
 
+    // separate locks to reduce contention
+    private val lockStatic = Any()
+    private val lockDynamic = Any()
+
     private val letterAssurance = 0.70
     private val arrayLength = 8
 
+    // Internal helper is NOT synchronized itself; callers must synchronize appropriately
     private fun addLabelToBuffer(buffer: ArrayDeque<String>, label: String?) {
         if (label != null) {
             buffer.addLast(label)
@@ -18,12 +23,11 @@ class LetterEmitter {
 
     /**
      * Zwraca literę najczęściej występującą w buforze oraz jej względną częstość.
-     * Specjalna obsługa przypadku, gdy w buforze są zarówno "G" jak i "UNKNOWN".
+     * Zakładamy, że dostarczony letterDeque jest "snapshotem" — nie musimy synchronizować tu.
      */
     fun getMostCommonLetter(letterDeque: ArrayDeque<String>): Pair<String?, Double> {
         val counts = letterDeque.groupingBy { it }.eachCount()
 
-        // Specjalna reguła biznesowa - jeśli są oba "G" i "UNKNOWN", zwracamy "G" z wysokim zaufaniem
         if ("G" in counts && "UNKNOWN" in counts) {
             return "G" to 0.9
         }
@@ -46,21 +50,38 @@ class LetterEmitter {
     ): String? {
         return when {
             mostCommonStatic.second > letterAssurance &&
-                    mostCommonDynamic.first == "STOP" &&
-                    mostCommonStatic.first !in listOf("Z", "D", "F") -> mostCommonStatic.first
+                    mostCommonDynamic.first == "STOP"  -> mostCommonStatic.first
 
             mostCommonDynamic.second > letterAssurance &&
                     mostCommonDynamic.first != "STOP" -> mostCommonDynamic.first
-
             else -> null
         }
     }
 
-    fun getStaticList(): ArrayDeque<String> = ArrayDeque(staticList)
-    fun getDynamicList(): ArrayDeque<String> = ArrayDeque(dynamicList)
-    fun addDynamicLabel(label: String?) = addLabelToBuffer(dynamicList, label)
-    fun addStaticLabel(label: String?) = addLabelToBuffer(staticList, label)
-    fun clearStaticList() = staticList.clear()
-    fun clearDynamicList() = dynamicList.clear()
+    // SAFE getters: tworzymy snapshot wewnątrz zsynchronizowanego bloku
+    fun getStaticList(): ArrayDeque<String> = synchronized(lockStatic) {
+        // snapshot -> ArrayDeque(Collection) w kontekście synchronizacji jest bezpieczne
+        ArrayDeque(staticList)
+    }
 
+    fun getDynamicList(): ArrayDeque<String> = synchronized(lockDynamic) {
+        ArrayDeque(dynamicList)
+    }
+
+    // SAFE modifiers: synchronizujemy zapisy
+    fun addDynamicLabel(label: String?) = synchronized(lockDynamic) {
+        addLabelToBuffer(dynamicList, label)
+    }
+
+    fun addStaticLabel(label: String?) = synchronized(lockStatic) {
+        addLabelToBuffer(staticList, label)
+    }
+
+    fun clearStaticList() = synchronized(lockStatic) {
+        staticList.clear()
+    }
+
+    fun clearDynamicList() = synchronized(lockDynamic) {
+        dynamicList.clear()
+    }
 }

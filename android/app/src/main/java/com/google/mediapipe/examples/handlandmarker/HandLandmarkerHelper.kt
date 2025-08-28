@@ -38,6 +38,7 @@ import java.nio.channels.FileChannel
 import java.io.FileInputStream
 import com.google.mediapipe.tasks.components.containers.NormalizedLandmark
 import kotlin.collections.ArrayDeque
+import kotlin.math.log
 
 
 class HandLandmarkerHelper(
@@ -78,7 +79,7 @@ class HandLandmarkerHelper(
     fun setupHandLandmarker() {
         // Set general hand landmarker options
         val baseOptionBuilder = BaseOptions.builder()
-
+        Log.d(TAG,"currentDelegate $currentDelegate")
         // Use the specified hardware for running the model. Default to CPU
         when (currentDelegate) {
             DELEGATE_CPU -> {
@@ -87,6 +88,7 @@ class HandLandmarkerHelper(
             DELEGATE_GPU -> {
                 baseOptionBuilder.setDelegate(Delegate.GPU)
             }
+
         }
 
         baseOptionBuilder.setModelAssetPath(MP_HAND_LANDMARKER_TASK)
