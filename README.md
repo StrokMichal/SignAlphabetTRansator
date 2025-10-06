@@ -11,9 +11,12 @@ Podstawą jest projekt udostępniony przez google, więcej na https://ai.google.
 
 ## Prezentacja działania
 
-Zobacz film prezentujący działanie aplikacji:
+![Prezentacja działania](prezentacja.gif)
+
+Zobacz film (z dzwiękiem) prezentujący działanie aplikacji:
 
 [![Zobacz na YouTube](https://img.shields.io/badge/▶️%20Obejrzyj%20na%20YouTube-red?style=for-the-badge)](https://youtu.be/Akcz60rHB4Y)
 
 [Kliknij tutaj, aby pobrać film](PREZENTACJA.mp4)
+
 
